@@ -28,119 +28,126 @@ using namespace std;
 namespace
 {
 
-	// This method implements what the pass does
-	void processFunction(Function &F)
-	{
+	
+	std::map<BasicBlock *, std::set<BasicBlock *>> computeDominators(Function &F) {
 		std::map<BasicBlock *, std::set<BasicBlock *>> dominators;
 		std::set<BasicBlock *> allBlocks;
 
-		// First, collect all basic blocks
-		for (BasicBlock &BB : F)
-		{
+		for (BasicBlock &BB : F) {
 			allBlocks.insert(&BB);
 		}
 
-		// Initialize dominators: Entry block dominates itself; all others dominate all blocks
-		for (BasicBlock &BB : F)
-		{
-			if (&BB == &F.getEntryBlock())
-			{
-				// Entry block dominates itself
+		for (BasicBlock &BB : F) {
+			if (&BB == &F.getEntryBlock()) {
 				dominators[&BB].insert(&BB);
-			}
-			else
-			{
-				// Assume every block dominates this block to start
+			} else {
 				dominators[&BB] = allBlocks;
 			}
 		}
 
-		// Iteratively compute dominators
 		bool changed = true;
-		while (changed)
-		{
+		while (changed) {
 			changed = false;
-			for (BasicBlock &BB : F)
-			{
+			for (BasicBlock &BB : F) {
 				if (&BB == &F.getEntryBlock())
 					continue;
 
 				std::set<BasicBlock *> intersectionSet = allBlocks;
-
-				// Compute the intersection of dominators of all predecessors
-				for (auto *Pred : predecessors(&BB))
-				{
+				for (auto *Pred : predecessors(&BB)) {
 					std::set<BasicBlock *> tempSet;
 					std::set_intersection(intersectionSet.begin(), intersectionSet.end(),
-										  dominators[Pred].begin(), dominators[Pred].end(),
-										  std::inserter(tempSet, tempSet.begin()));
+										dominators[Pred].begin(), dominators[Pred].end(),
+										std::inserter(tempSet, tempSet.begin()));
 					intersectionSet = tempSet;
 				}
 
-				// Add the current block to the intersection set
 				intersectionSet.insert(&BB);
-
-				// Update dominator set for the block if it has changed
-				if (dominators[&BB] != intersectionSet)
-				{
+				if (dominators[&BB] != intersectionSet) {
 					dominators[&BB] = intersectionSet;
 					changed = true;
 				}
 			}
 		}
 
-		// Print the dominators for each block
-		for (auto &DomPair : dominators)
-		{
-			BasicBlock *BB = DomPair.first;
-			std::set<BasicBlock *> &DomSet = DomPair.second;
+		return dominators;
+	}
 
-			// Print the name of the basic block and its dominators
-			errs() << BB->getName() << " is dominated by:\n";
-			for (BasicBlock *Dom : DomSet)
-			{
-				errs() << "\t" << Dom->getName() << "\n";
+	// Function to compute dominated blocks
+	std::map<BasicBlock *, std::set<BasicBlock *>> computeDominatedBlocks(Function &F, std::map<BasicBlock *, std::set<BasicBlock *>> &dominators) {
+		std::map<BasicBlock *, std::set<BasicBlock *>> dominatedBlocks;
+		for (BasicBlock &BB : F) {
+			dominatedBlocks[&BB] = std::set<BasicBlock *>();
+		}
+
+		for (BasicBlock &BB : F) {
+			dominatedBlocks[&BB].insert(&BB);
+			for (BasicBlock &OtherBB : F) {
+				if (&BB != &OtherBB && dominators[&OtherBB].find(&BB) != dominators[&OtherBB].end()) {
+					dominatedBlocks[&BB].insert(&OtherBB);
+				}
+			}
+		}
+
+		return dominatedBlocks;
+	}
+
+	// Function to compute immediate dominators
+	std::map<BasicBlock *, BasicBlock *> computeImmediateDominators(Function &F, std::map<BasicBlock *, std::set<BasicBlock *>> &dominators) {
+		std::map<BasicBlock *, BasicBlock *> immediateDominators;
+		for (BasicBlock &BB : F) {
+			if (&BB == &F.getEntryBlock())
+				continue; // Skip the entry block
+
+			std::set<BasicBlock *> DOM_d = dominators[&BB];
+			DOM_d.erase(&BB);
+
+			BasicBlock *iDom = nullptr;
+			for (BasicBlock *candidateIDom : DOM_d) {
+				bool dominatedByOther = false;
+				for (BasicBlock *other : DOM_d) {
+					if (other != candidateIDom && dominators[other].find(candidateIDom) != dominators[other].end()) {
+						dominatedByOther = true;
+						break;
+					}
+				}
+				if (!dominatedByOther) {
+					iDom = candidateIDom;
+					break;
+				}
+			}
+
+			if (iDom != nullptr) {
+				immediateDominators[&BB] = iDom;
+			}
+		}
+		return immediateDominators;
+	}
+	// This method implements what the pass does
+	void processFunction(Function &F){
+		auto dominators = computeDominators(F);
+		auto dominatedBlocks = computeDominatedBlocks(F, dominators);
+		auto immediateDominators = computeImmediateDominators(F, dominators);
+
+		// Print out the dominated blocks
+		for (auto &DominatedPair : dominatedBlocks) {
+			BasicBlock *BB = DominatedPair.first;
+			std::set<BasicBlock *> &DominatedSet = DominatedPair.second;
+
+			errs() << BB->getName() << " dominates:\n";
+			for (BasicBlock *DominatedBB : DominatedSet) {
+				errs() << "\t" << DominatedBB->getName() << "\n";
 			}
 			errs() << "\n";
 		}
+
+		// Print out the immediate dominators
+		for (BasicBlock &BB : F) {
+			if (&BB != &F.getEntryBlock()) { // Skip the entry block
+				BasicBlock *iDom = immediateDominators[&BB];
+				errs() << BB.getName() << "'s immediate dominator is " << (iDom ? iDom->getName() : "null") << "\n";
+			}
+		}
 	}
-	// void processFunction(Function &F){
-	// 	std::map<BasicBlock*, set<BasicBlock*>> dominators;
-	// 	std::map<BasicBlock*, set<BasicBlock*>> postDominators;
-
-	// 	std::set<BasicBlock*> allBlocks;
-
-	// 	// First collect all basic blocks
-	// 	for (BasicBlock &BB : F) {
-	// 		allBlocks.insert(&BB);
-	// 	}
-
-	// 	// ECE467 STUDENT: add your code here
-	// 	for (BasicBlock &BB : F){
-	// 		if (&BB == &F.getEntryBlock()) {
-	//         	// Entry block dominates itself
-	//         	dominators[&BB] = {&BB};
-	// 		} else {
-	// 			// Assume every block dominates this block to start
-	// 			dominators[&BB] = allBlocks;
-	// 		}
-	// 	}
-
-	// 	for (auto &DomPair : dominators) {
-	// 		BasicBlock *BB = DomPair.first;
-	// 		std::set<BasicBlock*> &DomSet = DomPair.second;
-
-	// 		// Print the name of the basic block
-	// 		errs() << BB->getName() << " initial set of dominators:\n";
-
-	// 		// Print the dominators
-	// 		for (BasicBlock *Dom : DomSet) {
-	// 			errs() << "\t" << Dom->getName() << "\n";
-	// 		}
-	// 		errs() << "\n";
-	// 	}
-
-	// }
 
 	struct A5Dom : PassInfoMixin<A5Dom>
 	{
