@@ -42,17 +42,17 @@ namespace
 				reversedCFG[Successor].insert(&BB);
 			}
 		}
-
-		// // Optionally, create a virtual exit node and connect all exit blocks to it
-		// // This is not a real basic block, just a conceptual tool for our analysis
-		// BasicBlock *virtualExit = (BasicBlock *)(intptr_t)(-1); // Using -1 cast to a pointer as a placeholder for the virtual exit
-
-		// for (BasicBlock &BB : F) {
-		// 	if (isa<ReturnInst>(BB.getTerminator()) || isa<UnreachableInst>(BB.getTerminator())) {
-		// 		reversedCFG[virtualExit].insert(&BB);
-		// 	}
-		// }
 		return reversedCFG;
+	}
+
+	std::set<BasicBlock *> findExitBlocks(Function &F) {
+		std::set<BasicBlock *> exitBlocks;
+		for (BasicBlock &BB : F) {
+			if (succ_begin(&BB) == succ_end(&BB)) {
+				exitBlocks.insert(&BB);
+			}
+		}
+		return exitBlocks;
 	}
 
 	std::map<BasicBlock *, std::set<BasicBlock *>> createCFGMap(Function &F) {
@@ -68,50 +68,6 @@ namespace
 
 		return CFGMap;
 	}
-
-
-	// std::map<BasicBlock *, std::set<BasicBlock *>> computeDominators(Function &F) {
-	// 	std::map<BasicBlock *, std::set<BasicBlock *>> dominators;
-	// 	std::set<BasicBlock *> allBlocks;
-
-	// 	for (BasicBlock &BB : F) {
-	// 		allBlocks.insert(&BB);
-	// 	}
-
-	// 	for (BasicBlock &BB : F) {
-	// 		if (&BB == &F.getEntryBlock()) {
-	// 			dominators[&BB].insert(&BB);
-	// 		} else {
-	// 			dominators[&BB] = allBlocks;
-	// 		}
-	// 	}
-
-	// 	bool changed = true;
-	// 	while (changed) {
-	// 		changed = false;
-	// 		for (BasicBlock &BB : F) {
-	// 			if (&BB == &F.getEntryBlock())
-	// 				continue;
-
-	// 			std::set<BasicBlock *> intersectionSet = allBlocks;
-	// 			for (auto *Pred : predecessors(&BB)) {
-	// 				std::set<BasicBlock *> tempSet;
-	// 				std::set_intersection(intersectionSet.begin(), intersectionSet.end(),
-	// 									dominators[Pred].begin(), dominators[Pred].end(),
-	// 									std::inserter(tempSet, tempSet.begin()));
-	// 				intersectionSet = tempSet;
-	// 			}
-
-	// 			intersectionSet.insert(&BB);
-	// 			if (dominators[&BB] != intersectionSet) {
-	// 				dominators[&BB] = intersectionSet;
-	// 				changed = true;
-	// 			}
-	// 		}
-	// 	}
-
-	// 	return dominators;
-	// }
 
 	std::map<BasicBlock *, std::set<BasicBlock *>> computeDominators(Function &F, std::map<BasicBlock *, std::set<BasicBlock *>> &CFG) {
 		std::map<BasicBlock *, std::set<BasicBlock *>> dominators;
@@ -139,9 +95,7 @@ namespace
 				std::set<BasicBlock *> intersectionSet = allBlocks;
 				for (BasicBlock *Pred : CFG[&BB]) { // Use the provided CFG here
 					std::set<BasicBlock *> tempSet;
-					std::set_intersection(intersectionSet.begin(), intersectionSet.end(),
-										dominators[Pred].begin(), dominators[Pred].end(),
-										std::inserter(tempSet, tempSet.begin()));
+					std::set_intersection(intersectionSet.begin(),intersectionSet.end(),dominators[Pred].begin(),dominators[Pred].end(),std::inserter(tempSet, tempSet.begin()));
 					intersectionSet = tempSet;
 				}
 
@@ -154,6 +108,52 @@ namespace
 		}
 
 		return dominators;
+	}
+
+	std::map<BasicBlock *, std::set<BasicBlock *>> computePostDominators(Function &F, std::map<BasicBlock *, std::set<BasicBlock *>> &reversedCFG, std::set<BasicBlock *> &exitBlocks) {
+		std::map<BasicBlock *, std::set<BasicBlock *>> postDominators;
+		std::set<BasicBlock *> allBlocks;
+
+		// Initialize all blocks set
+		for (BasicBlock &BB : F) {
+			allBlocks.insert(&BB);
+		}
+
+		// Initialize post-dominators: exit blocks post-dominate themselves; all others post-dominate all blocks
+		for (BasicBlock &BB : F) {
+			if (exitBlocks.find(&BB) != exitBlocks.end()) {
+				postDominators[&BB].insert(&BB);
+			} else {
+				postDominators[&BB] = allBlocks;
+			}
+		}
+
+		// Iteratively compute post-dominators
+		bool changed = true;
+		while (changed) {
+			changed = false;
+			for (BasicBlock &BB : F) {
+				if (exitBlocks.find(&BB) != exitBlocks.end())
+					continue; // Skip exit blocks
+
+				std::set<BasicBlock *> newPostDom = allBlocks;
+				for (BasicBlock *Succ : successors(&BB)) {
+					std::set<BasicBlock *> tempSet;
+					std::set_intersection(newPostDom.begin(), newPostDom.end(),
+										postDominators[Succ].begin(), postDominators[Succ].end(),
+										std::inserter(tempSet, tempSet.begin()));
+					newPostDom = tempSet;
+				}
+
+				newPostDom.insert(&BB); // A block always post-dominates itself
+				if (postDominators[&BB] != newPostDom) {
+					postDominators[&BB] = newPostDom;
+					changed = true;
+				}
+			}
+		}
+
+		return postDominators;
 	}
 
 	// Function to compute dominated blocks
@@ -176,11 +176,32 @@ namespace
 	}
 
 	// Function to compute immediate dominators
-	std::map<BasicBlock *, BasicBlock *> computeImmediateDominators(Function &F, std::map<BasicBlock *, std::set<BasicBlock *>> &dominators) {
+	std::map<BasicBlock *, BasicBlock *> computeImmediateDominators(Function &F, std::map<BasicBlock *, std::set<BasicBlock *>> &dominators, bool isPostDominator = false) {
 		std::map<BasicBlock *, BasicBlock *> immediateDominators;
 		for (BasicBlock &BB : F) {
-			if (&BB == &F.getEntryBlock())
-				continue; // Skip the entry block
+			// For post-dominators, skip the special handling for the entry block
+			if (isPostDominator && &BB == &F.getEntryBlock()) {
+				// Find the common post-dominator for all paths starting from the entry
+				std::set<BasicBlock *> allSuccessors;
+				for (auto *Succ : successors(&BB)) { // Changed from auto &Succ to auto *Succ
+					allSuccessors.insert(Succ);
+				}
+				
+				std::set<BasicBlock *> commonPostDoms = allSuccessors;
+				for (BasicBlock *Successor : allSuccessors) {
+					std::set<BasicBlock *> tempSet;
+					std::set_intersection(commonPostDoms.begin(), commonPostDoms.end(),
+										dominators[Successor].begin(), dominators[Successor].end(),
+										std::inserter(tempSet, tempSet.begin()));
+					commonPostDoms = tempSet;
+				}
+				
+				// The entry block's immediate post-dominator is the common post-dominator for all its successors
+				if (!commonPostDoms.empty()) {
+					immediateDominators[&BB] = *commonPostDoms.begin();
+				}
+				continue;
+			}
 
 			std::set<BasicBlock *> DOM_d = dominators[&BB];
 			DOM_d.erase(&BB);
@@ -206,19 +227,22 @@ namespace
 		}
 		return immediateDominators;
 	}
+
 	// This method implements what the pass does
 	void processFunction(Function &F){
 
 		auto predecessors = createCFGMap(F);
 		auto dominators = computeDominators(F, predecessors);
-		// auto dominators = computeDominators(F);
 		auto dominatedBlocks = computeDominatedBlocks(F, dominators);
-		auto immediateDominators = computeImmediateDominators(F, dominators);
+		auto immediateDominators = computeImmediateDominators(F, dominators, false);
 
-		// auto reversedCFG = reverseCFG(F);
-		// auto postDominators = computeDominators(F, reversedCFG);
-		// auto postDominatedBlocks = computeDominatedBlocks(F, postDominators);
-		// auto postImmediateDominators = computeImmediateDominators(F, postDominators);
+		// Post-Dominators
+		auto reversedCFG = reverseCFG(F);
+		auto exitBlocks = findExitBlocks(F);
+		auto postDominators = computePostDominators(F, reversedCFG, exitBlocks);
+		auto postDominatedBlocks = computeDominatedBlocks(F, postDominators);
+		auto postImmediateDominators = computeImmediateDominators(F, postDominators, true);
+
 
 		// Put all basic blocks into a vector for sorting for alphabetized output
 		std::vector<BasicBlock*> blocks;
@@ -254,9 +278,26 @@ namespace
 			// Print immediate dominator
 			BasicBlock *iDom = immediateDominators[BB];
 			errs() << "    " << (iDom ? iDom->getName() : "X") << "\n";
+
+			// Print post-dominated blocks
+			auto &postDominatedSet = postDominatedBlocks[BB];
+			errs() << "    "; // Indent the line
+			std::vector<std::string> postDominatedNames;
+			for (BasicBlock *PostDominatedBB : postDominatedSet) {
+				postDominatedNames.push_back(PostDominatedBB->getName().str());
+			}
+			std::sort(postDominatedNames.begin(), postDominatedNames.end());
+			for (const auto &name : postDominatedNames) {
+				errs() << name << " ";
+			}
+			errs() << "\n";
+
+			// Print immediate post-dominator
+			BasicBlock *iPostDom = postImmediateDominators[BB];
+			errs() << "    " << (iPostDom ? iPostDom->getName() : "X") << "\n";
 		}
 	}
-	
+
 	struct A5Dom : PassInfoMixin<A5Dom>
 	{
 		// This is the main entry point for processing the IR of a function
