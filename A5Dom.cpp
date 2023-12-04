@@ -179,26 +179,26 @@ namespace
 	std::map<BasicBlock *, BasicBlock *> computeImmediateDominators(Function &F, std::map<BasicBlock *, std::set<BasicBlock *>> &dominators, bool isPostDominator = false) {
 		std::map<BasicBlock *, BasicBlock *> immediateDominators;
 		for (BasicBlock &BB : F) {
-			// For post-dominators, skip the special handling for the entry block
 			if (isPostDominator && &BB == &F.getEntryBlock()) {
-				// Find the common post-dominator for all paths starting from the entry
-				std::set<BasicBlock *> allSuccessors;
-				for (auto *Succ : successors(&BB)) { // Changed from auto &Succ to auto *Succ
-					allSuccessors.insert(Succ);
+				// For the entry block in post-dominator calculations, find the common post-dominator
+				std::set<BasicBlock *> commonPostDoms;
+				for (auto *Succ : successors(&BB)) {
+					if (commonPostDoms.empty()) {
+						commonPostDoms = dominators[Succ];
+					} else {
+						std::set<BasicBlock *> tempSet;
+						std::set_intersection(commonPostDoms.begin(), commonPostDoms.end(),
+											dominators[Succ].begin(), dominators[Succ].end(),
+											std::inserter(tempSet, tempSet.begin()));
+						commonPostDoms = tempSet;
+					}
 				}
-				
-				std::set<BasicBlock *> commonPostDoms = allSuccessors;
-				for (BasicBlock *Successor : allSuccessors) {
-					std::set<BasicBlock *> tempSet;
-					std::set_intersection(commonPostDoms.begin(), commonPostDoms.end(),
-										dominators[Successor].begin(), dominators[Successor].end(),
-										std::inserter(tempSet, tempSet.begin()));
-					commonPostDoms = tempSet;
-				}
-				
-				// The entry block's immediate post-dominator is the common post-dominator for all its successors
+
+				// If there's a common post-dominator, set it for the entry block
 				if (!commonPostDoms.empty()) {
 					immediateDominators[&BB] = *commonPostDoms.begin();
+				} else {
+					errs() << "Warning: Entry block does not have a common immediate post-dominator.\n";
 				}
 				continue;
 			}
